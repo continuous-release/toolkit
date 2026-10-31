@@ -20,7 +20,7 @@ jobs:
     uses: continuous-release/.github/.github/workflows/auto-release.yml@main
     with:
       system: node
-      toolkit-ref: v0.1.0
+      toolkit-ref: v0.2.1
       setup-command: corepack enable && pnpm install --frozen-lockfile
       test-command: pnpm test && pnpm typecheck
       build-command: |

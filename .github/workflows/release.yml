@@ -11,52 +11,23 @@ concurrency:
 
 permissions:
   contents: write
+  packages: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
-
-      - name: Install
-        run: |
-          corepack enable
-          pnpm install --frozen-lockfile
-
-      - name: Test
-        run: |
-          pnpm test
-          pnpm typecheck
-
-      - name: Build
-        run: pnpm build
-
-      - name: Check the committed CLI bundle is current
-        run: git diff --exit-code packages/cli/dist/cli.js
-
-      - name: Plan
-        id: plan
-        run: node packages/cli/dist/cli.js plan --notes-out "$RUNNER_TEMP/notes.md"
-
-      - name: Package
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          tar -czf "dist/continuous-release-toolkit-${{ steps.plan.outputs.version }}.tgz" \
-            packages/cli/dist/cli.js action.yml README.md LICENSE
-
-      - name: Release
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          node packages/cli/dist/cli.js release \
-            --repo "$GITHUB_REPOSITORY" \
-            --tag "${{ steps.plan.outputs.tag }}" \
-            --notes-file "$RUNNER_TEMP/notes.md" \
-            --asset "dist/continuous-release-toolkit-${{ steps.plan.outputs.version }}.tgz"
+    uses: continuous-release/.github/.github/workflows/auto-release.yml@main
+    with:
+      system: node
+      toolkit-ref: v0.1.0
+      setup-command: corepack enable && pnpm install --frozen-lockfile
+      test-command: pnpm test && pnpm typecheck
+      build-command: |
+        set -euo pipefail
+        pnpm build
+        git diff --exit-code packages/cli/dist/cli.js
+        mkdir -p dist
+        tar -czf "dist/continuous-release-toolkit-$VERSION.tgz" \
+          packages/cli/dist/cli.js action.yml README.md LICENSE
+      artifact-glob: dist/*.tgz

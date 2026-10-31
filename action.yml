@@ -1,0 +1,136 @@
+name: continuous-release
+description: Compute versions, render notes, and create GitHub Releases from conventional commits
+author: continuous-release
+branding:
+  icon: tag
+  color: blue
+
+inputs:
+  command:
+    description: One of plan, notes, version, release, or verify
+    required: true
+  cwd:
+    description: Repository directory to operate on
+    required: false
+    default: ''
+  release-as:
+    description: Force a version instead of deriving one
+    required: false
+    default: ''
+  tag-prefix:
+    description: Prefix for version tags
+    required: false
+    default: v
+  notes-out:
+    description: Write generated notes to this path (plan)
+    required: false
+    default: ''
+  notes-file:
+    description: Read release notes from this path (release)
+    required: false
+    default: ''
+  adapter:
+    description: Version file adapter (npm, cargo, text)
+    required: false
+    default: ''
+  file:
+    description: Version file path for the adapter
+    required: false
+    default: ''
+  version:
+    description: Version to write (version)
+    required: false
+    default: ''
+  tag:
+    description: Release tag (release, verify)
+    required: false
+    default: ''
+  target:
+    description: Commit SHA for a new tag
+    required: false
+    default: ''
+  asset:
+    description: Comma-separated asset paths or globs to upload
+    required: false
+    default: ''
+  prerelease:
+    description: Mark the release as a prerelease
+    required: false
+    default: 'false'
+
+outputs:
+  version:
+    description: Next or existing version
+    value: ${{ steps.run.outputs.version }}
+  tag:
+    description: Next or existing tag
+    value: ${{ steps.run.outputs.tag }}
+  previous_tag:
+    description: Previous version tag
+    value: ${{ steps.run.outputs.previous_tag }}
+  existing:
+    description: Whether the tag already points at HEAD
+    value: ${{ steps.run.outputs.existing }}
+  bump:
+    description: major, minor, patch, or none
+    value: ${{ steps.run.outputs.bump }}
+  notes_path:
+    description: Path to the generated notes
+    value: ${{ steps.run.outputs.notes_path }}
+  release_url:
+    description: URL of the created or updated release
+    value: ${{ steps.run.outputs.release_url }}
+  release_id:
+    description: ID of the created or updated release
+    value: ${{ steps.run.outputs.release_id }}
+  exists:
+    description: Whether a release exists (verify)
+    value: ${{ steps.run.outputs.exists }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: '22'
+
+    - id: run
+      shell: bash
+      env:
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_CWD: ${{ inputs.cwd }}
+        INPUT_RELEASE_AS: ${{ inputs.release-as }}
+        INPUT_TAG_PREFIX: ${{ inputs.tag-prefix }}
+        INPUT_NOTES_OUT: ${{ inputs.notes-out }}
+        INPUT_NOTES_FILE: ${{ inputs.notes-file }}
+        INPUT_ADAPTER: ${{ inputs.adapter }}
+        INPUT_FILE: ${{ inputs.file }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_ASSET: ${{ inputs.asset }}
+        INPUT_PRERELEASE: ${{ inputs.prerelease }}
+      run: |
+        set -euo pipefail
+
+        args=("$INPUT_COMMAND")
+        [[ -n "${INPUT_CWD:-}" ]] && args+=(--cwd "$INPUT_CWD")
+        [[ -n "${INPUT_RELEASE_AS:-}" ]] && args+=(--release-as "$INPUT_RELEASE_AS")
+        [[ -n "${INPUT_TAG_PREFIX:-}" ]] && args+=(--tag-prefix "$INPUT_TAG_PREFIX")
+        [[ -n "${INPUT_NOTES_OUT:-}" ]] && args+=(--notes-out "$INPUT_NOTES_OUT")
+        [[ -n "${INPUT_NOTES_FILE:-}" ]] && args+=(--notes-file "$INPUT_NOTES_FILE")
+        [[ -n "${INPUT_ADAPTER:-}" ]] && args+=(--adapter "$INPUT_ADAPTER")
+        [[ -n "${INPUT_FILE:-}" ]] && args+=(--file "$INPUT_FILE")
+        [[ -n "${INPUT_VERSION:-}" ]] && args+=(--version "$INPUT_VERSION")
+        [[ -n "${INPUT_TAG:-}" ]] && args+=(--tag "$INPUT_TAG")
+        [[ -n "${INPUT_TARGET:-}" ]] && args+=(--target "$INPUT_TARGET")
+        [[ "${INPUT_PRERELEASE:-false}" == "true" ]] && args+=(--prerelease)
+
+        if [[ -n "${INPUT_ASSET:-}" ]]; then
+          IFS=',' read -ra assets <<< "$INPUT_ASSET"
+          for asset in "${assets[@]}"; do
+            [[ -n "$asset" ]] && args+=(--asset "$asset")
+          done
+        fi
+
+        node "$GITHUB_ACTION_PATH/packages/cli/dist/cli.js" "${args[@]}"

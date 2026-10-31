@@ -2019,6 +2019,15 @@ async function unreserve() {
 		console.log(`keeping ${tag}: it points at ${sha}, not ${target}`);
 		return;
 	}
+	execFileSync("git", [
+		"fetch",
+		"--tags",
+		"--force",
+		"origin"
+	], {
+		cwd,
+		stdio: "ignore"
+	});
 	const highest = listVersionTags(cwd, prefix)[0];
 	if (highest && highest !== tag) {
 		console.log(`keeping ${tag}: ${highest} is newer`);

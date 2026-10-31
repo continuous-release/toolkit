@@ -70,6 +70,35 @@ export function lastTag(cwd = process.cwd(), prefix = 'v'): string | null {
   }
 }
 
+export function lastTagBefore(ref: string, cwd = process.cwd(), prefix = 'v'): string | null {
+  try {
+    return (
+      execFileSync(
+        'git',
+        ['describe', '--tags', '--abbrev=0', '--match', `${prefix}*`, `${ref}^`],
+        { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      ).trim() || null
+    );
+  } catch {
+    return null;
+  }
+}
+
+export function listVersionTags(cwd = process.cwd(), prefix = 'v'): string[] {
+  try {
+    return execFileSync('git', ['tag', '--list', `${prefix}*`, '--sort=-v:refname'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .split('\n')
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 export function tagsAtHead(cwd = process.cwd(), prefix = 'v'): string[] {
   try {
     return execFileSync('git', ['tag', '--points-at', 'HEAD', '--list', `${prefix}*`], {

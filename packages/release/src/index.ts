@@ -43,6 +43,22 @@ export interface UpdateReleaseInput {
   draft?: boolean;
 }
 
+export interface GitRef {
+  ref: string;
+  object: { sha: string; type: string };
+}
+
+export class TagConflictError extends Error {
+  constructor(
+    readonly tag: string,
+    readonly expected: string,
+    readonly actual: string,
+  ) {
+    super(`tag ${tag} already points at ${actual}, not ${expected}`);
+    this.name = 'TagConflictError';
+  }
+}
+
 export class ReleaseClient {
   private readonly apiUrl: string;
 
@@ -77,6 +93,54 @@ export class ReleaseClient {
 
     if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
+  }
+
+  async getTagRef(tag: string): Promise<GitRef | null> {
+    try {
+      return await this.request<GitRef>(
+        `/repos/${this.options.repository}/git/ref/tags/${encodeURIComponent(tag)}`,
+      );
+    } catch (error) {
+      if ((error as { status?: number }).status === 404) return null;
+      throw error;
+    }
+  }
+
+  async resolveTagCommit(tag: string): Promise<string | null> {
+    const ref = await this.getTagRef(tag);
+    if (!ref) return null;
+    if (ref.object.type === 'commit') return ref.object.sha;
+    const annotated = await this.request<{ object: { sha: string } }>(
+      `/repos/${this.options.repository}/git/tags/${ref.object.sha}`,
+    );
+    return annotated.object.sha;
+  }
+
+  async createTagRef(tag: string, sha: string): Promise<GitRef> {
+    return this.request<GitRef>(`/repos/${this.options.repository}/git/refs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: `refs/tags/${tag}`, sha }),
+    });
+  }
+
+  /**
+   * Reserve a version by creating its tag. Tag creation is atomic on the
+   * server, so the first run to reach it wins and every later run sees either
+   * the same commit (a re-run) or a different one (a lost race).
+   */
+  async reserveTag(tag: string, sha: string): Promise<{ created: boolean }> {
+    try {
+      await this.createTagRef(tag, sha);
+      return { created: true };
+    } catch (error) {
+      if ((error as { status?: number }).status !== 422) throw error;
+    }
+
+    const current = await this.resolveTagCommit(tag);
+    if (!current) throw new Error(`tag ${tag} exists but could not be read`);
+    if (current !== sha) throw new TagConflictError(tag, sha, current);
+    return { created: false };
   }
 
   async getReleaseByTag(tag: string): Promise<Release | null> {

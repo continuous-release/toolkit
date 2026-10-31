@@ -97,6 +97,78 @@ describe('ReleaseClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it('reserves a version by creating its tag ref', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe('https://api.test/repos/o/r/git/refs');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        ref: 'refs/tags/v1.2.3',
+        sha: 'abc',
+      });
+      return jsonResponse(
+        { ref: 'refs/tags/v1.2.3', object: { sha: 'abc', type: 'commit' } },
+        201,
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new ReleaseClient({ token: 't', repository: 'o/r', apiUrl: 'https://api.test' });
+    await expect(client.reserveTag('v1.2.3', 'abc')).resolves.toEqual({ created: true });
+  });
+
+  it('treats an existing tag on the same commit as an idempotent reservation', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({ message: 'Reference already exists' }), {
+          status: 422,
+        });
+      }
+      expect(String(input)).toBe('https://api.test/repos/o/r/git/ref/tags/v1.2.3');
+      return jsonResponse({ ref: 'refs/tags/v1.2.3', object: { sha: 'abc', type: 'commit' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new ReleaseClient({ token: 't', repository: 'o/r', apiUrl: 'https://api.test' });
+    await expect(client.reserveTag('v1.2.3', 'abc')).resolves.toEqual({ created: false });
+  });
+
+  it('reports a conflict when the tag points at another commit', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({ message: 'Reference already exists' }), {
+          status: 422,
+        });
+      }
+      return jsonResponse({ ref: 'refs/tags/v1.2.3', object: { sha: 'other', type: 'commit' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new ReleaseClient({ token: 't', repository: 'o/r', apiUrl: 'https://api.test' });
+    await expect(client.reserveTag('v1.2.3', 'abc')).rejects.toMatchObject({
+      name: 'TagConflictError',
+      tag: 'v1.2.3',
+      expected: 'abc',
+      actual: 'other',
+    });
+  });
+
+  it('peels an annotated tag to its commit', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('/git/ref/tags/v1.2.3')) {
+        return jsonResponse({ ref: 'refs/tags/v1.2.3', object: { sha: 'tag-object', type: 'tag' } });
+      }
+      if (url.endsWith('/git/tags/tag-object')) {
+        return jsonResponse({ object: { sha: 'commit-sha' } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new ReleaseClient({ token: 't', repository: 'o/r', apiUrl: 'https://api.test' });
+    await expect(client.resolveTagCommit('v1.2.3')).resolves.toBe('commit-sha');
+  });
+
   it('encodes tag names when deleting a tag', async () => {
     const fetchMock = vi.fn(
       async (_input: string | URL | Request, _init?: RequestInit) =>

@@ -27,6 +27,6 @@ toml_edit = "0.25"
 
 [dev-dependencies]
 assert_cmd = "2"
-httpmock = "0.9"
+fake-github = { git = "https://github.com/continuous-release/fake-github.git", tag = "v0.19.0" }
 predicates = "3"
 tempfile = "3"

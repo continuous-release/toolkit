@@ -20,7 +20,7 @@ jobs:
     uses: continuous-release/.github/.github/workflows/auto-release.yml@main
     with:
       system: rust
-      toolkit-ref: v0.3.0
+      toolkit-ref: v0.3.1
       setup-command: rustup show
       test-command: cargo test --locked
       build-command: |
@@ -32,3 +32,41 @@ jobs:
         (cd dist && sha256sum cr-linux-x86_64 > cr-linux-x86_64.sha256)
         ./dist/cr-linux-x86_64 --version
       artifact-glob: dist/*
+
+  verify:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify the tag points at this commit
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          test -n "$TAG"
+          test "$(git rev-parse "$TAG^{commit}")" = "$GITHUB_SHA"
+
+      - name: Verify the published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p verify
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir verify
+
+          test -s verify/cr-linux-x86_64
+          test -s verify/cr-linux-x86_64.sha256
+          (cd verify && sha256sum -c cr-linux-x86_64.sha256)
+
+          chmod +x verify/cr-linux-x86_64
+          test "$(verify/cr-linux-x86_64 --version)" = "cr ${TAG#v}"
+
+          draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+          test "$draft" = "false"

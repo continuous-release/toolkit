@@ -1,0 +1,32 @@
+[package]
+name = "continuous-release"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Continuous releases from conventional commits: versions, notes, adapters, and GitHub Releases"
+license = "MIT"
+repository = "https://github.com/continuous-release/toolkit"
+homepage = "https://github.com/continuous-release/toolkit"
+readme = "README.md"
+
+[[bin]]
+name = "cr"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+git-conventional = "1.1"
+glob = "0.3"
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml_edit = "0.25"
+
+[dev-dependencies]
+assert_cmd = "2"
+httpmock = "0.9"
+predicates = "3"
+tempfile = "3"

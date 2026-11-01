@@ -1,8 +1,2 @@
-node_modules/
-dist/
-!packages/cli/dist/
-packages/cli/dist/*
-!packages/cli/dist/cli.js
-*.tsbuildinfo
-.DS_Store
-coverage/
+/target
+/dist

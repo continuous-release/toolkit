@@ -7,7 +7,7 @@ branding:
 
 inputs:
   command:
-    description: One of plan, notes, version, release, or verify
+    description: One of plan, notes, version, reserve, unreserve, release, or verify
     required: true
   cwd:
     description: Repository directory to operate on
@@ -22,7 +22,7 @@ inputs:
     required: false
     default: v
   notes-out:
-    description: Write generated notes to this path (plan)
+    description: Write generated notes to this path (plan, reserve)
     required: false
     default: ''
   notes-file:
@@ -42,7 +42,7 @@ inputs:
     required: false
     default: ''
   tag:
-    description: Release tag (release, verify)
+    description: Release tag (unreserve, release, verify)
     required: false
     default: ''
   target:
@@ -71,6 +71,9 @@ outputs:
   existing:
     description: Whether the tag already points at HEAD
     value: ${{ steps.run.outputs.existing }}
+  superseded:
+    description: Whether a later release already contains this commit
+    value: ${{ steps.run.outputs.superseded }}
   bump:
     description: major, minor, patch, or none
     value: ${{ steps.run.outputs.bump }}
@@ -90,9 +93,32 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-      with:
-        node-version: '22'
+    - name: Install the release toolkit
+      shell: bash
+      env:
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+
+        ref="${ACTION_REF:-latest}"
+        if [[ "$ref" == "latest" ]]; then
+          base="https://github.com/continuous-release/toolkit/releases/latest/download"
+        else
+          base="https://github.com/continuous-release/toolkit/releases/download/${ref}"
+        fi
+
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64) asset="cr-linux-x86_64" ;;
+          *)
+            echo "No prebuilt cr binary for $(uname -s)-$(uname -m)" >&2
+            exit 1
+            ;;
+        esac
+
+        curl -fsSL -o "$RUNNER_TEMP/cr" "${base}/${asset}"
+        chmod +x "$RUNNER_TEMP/cr"
+        "$RUNNER_TEMP/cr" --version
+        echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
     - id: run
       shell: bash
@@ -133,4 +159,4 @@ runs:
           done
         fi
 
-        node "$GITHUB_ACTION_PATH/packages/cli/dist/cli.js" "${args[@]}"
+        cr "${args[@]}"

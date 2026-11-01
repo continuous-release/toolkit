@@ -11,7 +11,6 @@ concurrency:
 
 permissions:
   contents: write
-  packages: write
   id-token: write
   attestations: write
 
@@ -19,15 +18,16 @@ jobs:
   release:
     uses: continuous-release/.github/.github/workflows/auto-release.yml@main
     with:
-      system: node
+      system: rust
       toolkit-ref: v0.2.1
-      setup-command: corepack enable && pnpm install --frozen-lockfile
-      test-command: pnpm test && pnpm typecheck
+      setup-command: rustup show
+      test-command: cargo test --locked
       build-command: |
         set -euo pipefail
-        pnpm build
-        git diff --exit-code packages/cli/dist/cli.js
+        CR_VERSION="$VERSION" cargo build --release --locked
         mkdir -p dist
-        tar -czf "dist/continuous-release-toolkit-$VERSION.tgz" \
-          packages/cli/dist/cli.js action.yml README.md LICENSE
-      artifact-glob: dist/*.tgz
+        cp target/release/cr dist/cr-linux-x86_64
+        strip dist/cr-linux-x86_64
+        (cd dist && sha256sum cr-linux-x86_64 > cr-linux-x86_64.sha256)
+        ./dist/cr-linux-x86_64 --version
+      artifact-glob: dist/*

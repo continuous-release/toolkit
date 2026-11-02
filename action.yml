@@ -18,9 +18,17 @@ inputs:
     required: false
     default: ''
   tag-prefix:
-    description: Prefix for version tags
+    description: Prefix for version tags in single-version mode
     required: false
     default: v
+  config:
+    description: Project configuration file (defaults to cr.json at the repository root)
+    required: false
+    default: ''
+  project:
+    description: Comma-separated project names to select from the configuration
+    required: false
+    default: ''
   notes-out:
     description: Write generated notes to this path (plan, reserve)
     required: false
@@ -59,6 +67,15 @@ inputs:
     default: 'false'
 
 outputs:
+  project:
+    description: Selected project name (when exactly one project is selected)
+    value: ${{ steps.run.outputs.project }}
+  projects:
+    description: Compact JSON array of every selected project
+    value: ${{ steps.run.outputs.projects }}
+  changed:
+    description: Whether any selected project has changes to release
+    value: ${{ steps.run.outputs.changed }}
   version:
     description: Next or existing version
     value: ${{ steps.run.outputs.version }}
@@ -80,6 +97,12 @@ outputs:
   notes_path:
     description: Path to the generated notes
     value: ${{ steps.run.outputs.notes_path }}
+  notes_dir:
+    description: Directory of generated notes in a multi-project run
+    value: ${{ steps.run.outputs.notes_dir }}
+  releases:
+    description: JSON array of created or updated releases in a multi-project run
+    value: ${{ steps.run.outputs.releases }}
   release_url:
     description: URL of the created or updated release
     value: ${{ steps.run.outputs.release_url }}
@@ -127,6 +150,8 @@ runs:
         INPUT_CWD: ${{ inputs.cwd }}
         INPUT_RELEASE_AS: ${{ inputs.release-as }}
         INPUT_TAG_PREFIX: ${{ inputs.tag-prefix }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_PROJECT: ${{ inputs.project }}
         INPUT_NOTES_OUT: ${{ inputs.notes-out }}
         INPUT_NOTES_FILE: ${{ inputs.notes-file }}
         INPUT_ADAPTER: ${{ inputs.adapter }}
@@ -143,6 +168,14 @@ runs:
         [[ -n "${INPUT_CWD:-}" ]] && args+=(--cwd "$INPUT_CWD")
         [[ -n "${INPUT_RELEASE_AS:-}" ]] && args+=(--release-as "$INPUT_RELEASE_AS")
         [[ -n "${INPUT_TAG_PREFIX:-}" ]] && args+=(--tag-prefix "$INPUT_TAG_PREFIX")
+        [[ -n "${INPUT_CONFIG:-}" ]] && args+=(--config "$INPUT_CONFIG")
+        if [[ -n "${INPUT_PROJECT:-}" ]]; then
+          IFS=',' read -ra projects <<< "$INPUT_PROJECT"
+          for project in "${projects[@]}"; do
+            project="${project//[[:space:]]/}"
+            [[ -n "$project" ]] && args+=(--project "$project")
+          done
+        fi
         [[ -n "${INPUT_NOTES_OUT:-}" ]] && args+=(--notes-out "$INPUT_NOTES_OUT")
         [[ -n "${INPUT_NOTES_FILE:-}" ]] && args+=(--notes-file "$INPUT_NOTES_FILE")
         [[ -n "${INPUT_ADAPTER:-}" ]] && args+=(--adapter "$INPUT_ADAPTER")

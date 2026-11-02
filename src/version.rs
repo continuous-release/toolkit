@@ -40,6 +40,9 @@ pub struct NextVersion {
     pub previous_tag: Option<String>,
     pub bump: Bump,
     pub existing: bool,
+    /// False when a path-filtered project has no commits since its last tag.
+    /// Such a project is a no-op and must not reserve or release a version.
+    pub changed: bool,
     pub release_as: Option<String>,
 }
 
@@ -76,9 +79,34 @@ pub fn parse_commit(hash: &str, subject: &str, body: &str) -> ConventionalCommit
 
 pub fn read_commits(range: &str, cwd: &Path) -> Result<Vec<ConventionalCommit>> {
     let raw = run_git(&["log", range, "--format=%H%x1f%s%x1f%b%x1e"], cwd)?;
+    Ok(parse_commit_log(&raw))
+}
 
-    Ok(raw
-        .split('\x1e')
+/// Read commits, optionally restricted to repository-relative paths. An empty
+/// path list means every commit, matching the single-version behaviour.
+pub fn read_commits_filtered(
+    range: &str,
+    cwd: &Path,
+    paths: &[String],
+) -> Result<Vec<ConventionalCommit>> {
+    if paths.is_empty() {
+        return read_commits(range, cwd);
+    }
+
+    let mut args: Vec<String> = vec![
+        "log".to_string(),
+        range.to_string(),
+        "--format=%H%x1f%s%x1f%b%x1e".to_string(),
+        "--".to_string(),
+    ];
+    args.extend(paths.iter().cloned());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let raw = run_git(&refs, cwd)?;
+    Ok(parse_commit_log(&raw))
+}
+
+fn parse_commit_log(raw: &str) -> Vec<ConventionalCommit> {
+    raw.split('\x1e')
         .map(str::trim)
         .filter(|record| !record.is_empty())
         .map(|record| {
@@ -88,7 +116,7 @@ pub fn read_commits(range: &str, cwd: &Path) -> Result<Vec<ConventionalCommit>> 
             let body = parts.next().unwrap_or_default();
             parse_commit(hash, subject, body)
         })
-        .collect())
+        .collect()
 }
 
 pub fn last_tag(cwd: &Path, prefix: &str) -> Option<String> {
@@ -126,6 +154,7 @@ pub fn tags_at_head(cwd: &Path, prefix: &str) -> Vec<String> {
             "HEAD",
             "--list",
             &format!("{prefix}*"),
+            "--sort=-v:refname",
         ],
         cwd,
     )
@@ -202,6 +231,9 @@ pub struct ComputeOptions<'a> {
     pub cwd: &'a Path,
     pub release_as: Option<&'a str>,
     pub prefix: &'a str,
+    /// Repository-relative paths. Empty means every commit; otherwise only
+    /// commits touching one of these paths can bump the version.
+    pub paths: &'a [String],
 }
 
 impl<'a> ComputeOptions<'a> {
@@ -210,6 +242,7 @@ impl<'a> ComputeOptions<'a> {
             cwd,
             release_as: None,
             prefix: "v",
+            paths: &[],
         }
     }
 }
@@ -226,6 +259,7 @@ pub fn compute_next_version(options: &ComputeOptions<'_>) -> Result<NextVersion>
             previous_tag,
             bump: Bump::None,
             existing: true,
+            changed: true,
             release_as: None,
         });
     }
@@ -234,7 +268,7 @@ pub fn compute_next_version(options: &ComputeOptions<'_>) -> Result<NextVersion>
         .as_ref()
         .map(|tag| format!("{tag}..HEAD"))
         .unwrap_or_else(|| "HEAD".to_string());
-    let commits = read_commits(&range, options.cwd)?;
+    let commits = read_commits_filtered(&range, options.cwd, options.paths)?;
 
     let release_as = options.release_as.map(str::to_string).or_else(|| {
         commits
@@ -252,7 +286,30 @@ pub fn compute_next_version(options: &ComputeOptions<'_>) -> Result<NextVersion>
             previous_tag,
             bump: Bump::None,
             existing: false,
+            changed: true,
             release_as: Some(release_as),
+        });
+    }
+
+    // A path-filtered project whose files did not change has no new release.
+    // The version and tag describe the current release so callers can report
+    // it; `changed` tells them not to reserve anything.
+    if !options.paths.is_empty() && commits.is_empty() {
+        let version = previous_tag
+            .as_deref()
+            .and_then(|tag| Version::parse(tag.trim_start_matches(options.prefix)).ok())
+            .map(|version| version.to_string())
+            .unwrap_or_else(|| "0.0.0".to_string());
+        return Ok(NextVersion {
+            tag: previous_tag
+                .clone()
+                .unwrap_or_else(|| format!("{}{}", options.prefix, version)),
+            version,
+            previous_tag,
+            bump: Bump::None,
+            existing: false,
+            changed: false,
+            release_as: None,
         });
     }
 
@@ -263,6 +320,7 @@ pub fn compute_next_version(options: &ComputeOptions<'_>) -> Result<NextVersion>
             previous_tag: None,
             bump: Bump::Minor,
             existing: false,
+            changed: true,
             release_as: None,
         });
     };
@@ -290,6 +348,7 @@ pub fn compute_next_version(options: &ComputeOptions<'_>) -> Result<NextVersion>
         previous_tag: Some(previous_tag),
         bump,
         existing: false,
+        changed: true,
         release_as: None,
     })
 }
@@ -300,10 +359,60 @@ pub fn repository_root(cwd: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(root))
 }
 
-/// Validate a tag prefix early so an empty prefix cannot match every tag.
+/// Validate a tag prefix early so an empty prefix cannot match every tag and so
+/// a generated tag is always a valid git ref.
 pub fn validate_prefix(prefix: &str) -> Result<()> {
     if prefix.is_empty() {
         bail!("tag prefix cannot be empty");
+    }
+    if prefix.trim() != prefix {
+        bail!("tag prefix cannot have surrounding whitespace: {prefix:?}");
+    }
+    if prefix.starts_with('-') {
+        bail!("tag prefix cannot start with '-': {prefix}");
+    }
+    if prefix.starts_with('/') || prefix.ends_with('/') {
+        bail!("tag prefix cannot start or end with '/': {prefix}");
+    }
+    if prefix.contains("//") {
+        bail!("tag prefix cannot contain '//': {prefix}");
+    }
+    if prefix.contains("..") {
+        bail!("tag prefix cannot contain '..': {prefix}");
+    }
+    if prefix.contains("@{") {
+        bail!("tag prefix cannot contain '@{{': {prefix}");
+    }
+    if prefix.ends_with(".lock") {
+        bail!("tag prefix cannot end with '.lock': {prefix}");
+    }
+    if prefix == "@" {
+        bail!("tag prefix cannot be '@'");
+    }
+    if prefix.ends_with('.') {
+        bail!("tag prefix cannot end with '.': {prefix}");
+    }
+    for component in prefix.split('/') {
+        if component.starts_with('.') {
+            bail!("tag prefix components cannot start with '.': {prefix}");
+        }
+        if component.ends_with(".lock") {
+            bail!("tag prefix components cannot end with '.lock': {prefix}");
+        }
+    }
+    if let Some(character) = prefix
+        .chars()
+        .find(|character| character.is_control() || character.is_whitespace())
+    {
+        bail!(
+            "tag prefix cannot contain whitespace or control characters ({character:?}): {prefix}"
+        );
+    }
+    if let Some(character) = prefix
+        .chars()
+        .find(|character| matches!(character, '~' | '^' | ':' | '?' | '*' | '[' | '\\'))
+    {
+        bail!("tag prefix cannot contain {character:?}: {prefix}");
     }
     Ok(())
 }

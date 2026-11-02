@@ -21,7 +21,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 struct Repo {
     dir: TempDir,
-    count: usize,
+    count: std::cell::Cell<usize>,
 }
 
 impl Repo {
@@ -30,17 +30,36 @@ impl Repo {
         git(dir.path(), &["init", "-q", "-b", "main"]);
         git(dir.path(), &["config", "user.email", "test@example.com"]);
         git(dir.path(), &["config", "user.name", "Test"]);
-        Self { dir, count: 0 }
+        Self {
+            dir,
+            count: std::cell::Cell::new(0),
+        }
     }
 
     fn path(&self) -> &Path {
         self.dir.path()
     }
 
-    fn commit(&mut self, message: &str, body: Option<&str>) {
-        self.count += 1;
-        fs::write(self.path().join("file.txt"), format!("{}\n", self.count)).expect("write");
-        git(self.path(), &["add", "."]);
+    fn commit(&self, message: &str, body: Option<&str>) {
+        self.count.set(self.count.get() + 1);
+        fs::write(
+            self.path().join("file.txt"),
+            format!("{}\n", self.count.get()),
+        )
+        .expect("write");
+        self.commit_staged(message, body);
+    }
+
+    fn write(&self, relative: &str, contents: &str) {
+        let path = self.path().join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create dirs");
+        }
+        fs::write(path, contents).expect("write");
+    }
+
+    fn commit_staged(&self, message: &str, body: Option<&str>) {
+        git(self.path(), &["add", "-A"]);
         let mut args = vec!["commit", "-q", "-m", message];
         if let Some(body) = body {
             args.push("-m");
@@ -83,7 +102,7 @@ fn keeps_non_conventional_subjects() {
 
 #[test]
 fn starts_at_zero_one_zero_without_a_tag() {
-    let mut repo = Repo::new();
+    let repo = Repo::new();
     repo.commit("feat: first", None);
     let next = compute(&repo);
     assert_eq!(next.version, "0.1.0");
@@ -95,7 +114,7 @@ fn starts_at_zero_one_zero_without_a_tag() {
 
 #[test]
 fn bumps_patch_for_fixes() {
-    let mut repo = Repo::new();
+    let repo = Repo::new();
     repo.commit("feat: first", None);
     repo.tag("v1.2.3");
     repo.commit("fix: a bug", None);
@@ -107,7 +126,7 @@ fn bumps_patch_for_fixes() {
 
 #[test]
 fn bumps_minor_for_features() {
-    let mut repo = Repo::new();
+    let repo = Repo::new();
     repo.commit("feat: first", None);
     repo.tag("v1.2.3");
     repo.commit("feat(core): add thing", None);
@@ -118,7 +137,7 @@ fn bumps_minor_for_features() {
 
 #[test]
 fn bumps_major_for_a_bang() {
-    let mut repo = Repo::new();
+    let repo = Repo::new();
     repo.commit("feat: first", None);
     repo.tag("v1.2.3");
     repo.commit("refactor!: drop old API", None);
@@ -129,7 +148,7 @@ fn bumps_major_for_a_bang() {
 
 #[test]
 fn bumps_major_for_a_breaking_footer() {
-    let mut repo = Repo::new();
+    let repo = Repo::new();
     repo.commit("feat: first", None);
     repo.tag("v1.2.3");
     repo.commit("fix: adjust", Some("BREAKING CHANGE: removed flag"));
@@ -140,7 +159,7 @@ fn bumps_major_for_a_breaking_footer() {
 
 #[test]
 fn releases_a_patch_for_chore_only_commits() {
-    let mut repo = Repo::new();
+    let repo = Repo::new();
     repo.commit("feat: first", None);
     repo.tag("v1.2.3");
     repo.commit("chore: tidy", None);
@@ -151,7 +170,7 @@ fn releases_a_patch_for_chore_only_commits() {
 
 #[test]
 fn honors_release_as() {
-    let mut repo = Repo::new();
+    let repo = Repo::new();
     repo.commit("feat: first", None);
     repo.tag("v1.2.3");
     repo.commit("chore: force", Some("Release-As: 3.4.5"));
@@ -163,7 +182,7 @@ fn honors_release_as() {
 
 #[test]
 fn reuses_a_tag_already_on_head() {
-    let mut repo = Repo::new();
+    let repo = Repo::new();
     repo.commit("feat: first", None);
     repo.tag("v1.2.3");
     let next = compute(&repo);
@@ -175,7 +194,7 @@ fn reuses_a_tag_already_on_head() {
 
 #[test]
 fn supports_a_custom_tag_prefix() {
-    let mut repo = Repo::new();
+    let repo = Repo::new();
     repo.commit("feat: first", None);
     repo.tag("release-1.0.0");
     repo.commit("fix: bug", None);
@@ -183,9 +202,209 @@ fn supports_a_custom_tag_prefix() {
         cwd: repo.path(),
         release_as: None,
         prefix: "release-",
+        paths: &[],
     })
     .expect("version");
     assert_eq!(next.version, "1.0.1");
     assert_eq!(next.tag, "release-1.0.1");
     assert_eq!(next.previous_tag.as_deref(), Some("release-1.0.0"));
+}
+
+fn compute_paths(
+    repo: &Repo,
+    prefix: &str,
+    paths: &[&str],
+) -> continuous_release::version::NextVersion {
+    let paths: Vec<String> = paths.iter().map(|path| path.to_string()).collect();
+    compute_next_version(&ComputeOptions {
+        cwd: repo.path(),
+        release_as: None,
+        prefix,
+        paths: &paths,
+    })
+    .expect("version")
+}
+
+#[test]
+fn a_path_filtered_project_is_unchanged_without_matching_commits() {
+    let repo = Repo::new();
+    repo.write("packages/core/index.js", "one\n");
+    repo.commit_staged("feat: add core", None);
+    repo.tag("core-v1.0.0");
+
+    repo.write("packages/ui/index.js", "one\n");
+    repo.commit_staged("feat: add ui", None);
+
+    let next = compute_paths(&repo, "core-v", &["packages/core"]);
+    assert!(!next.changed);
+    assert_eq!(next.version, "1.0.0");
+    assert_eq!(next.tag, "core-v1.0.0");
+    assert_eq!(next.bump.as_str(), "none");
+    assert!(!next.existing);
+}
+
+#[test]
+fn a_path_filtered_project_bumps_only_for_its_own_changes() {
+    let repo = Repo::new();
+    repo.write("packages/core/index.js", "one\n");
+    repo.write("packages/ui/index.js", "one\n");
+    repo.commit_staged("feat: add packages", None);
+    repo.tag("core-v1.0.0");
+    repo.tag("ui-v1.0.0");
+
+    repo.write("packages/core/index.js", "two\n");
+    repo.commit_staged("feat(core): new api", None);
+
+    let core = compute_paths(&repo, "core-v", &["packages/core"]);
+    assert!(core.changed);
+    assert_eq!(core.version, "1.1.0");
+    assert_eq!(core.tag, "core-v1.1.0");
+
+    let ui = compute_paths(&repo, "ui-v", &["packages/ui"]);
+    assert!(!ui.changed);
+    assert_eq!(ui.version, "1.0.0");
+    assert_eq!(ui.tag, "ui-v1.0.0");
+}
+
+#[test]
+fn a_shared_path_bumps_every_filtered_project() {
+    let repo = Repo::new();
+    repo.write("packages/core/index.js", "one\n");
+    repo.write("packages/ui/index.js", "one\n");
+    repo.commit_staged("feat: add packages", None);
+    repo.tag("core-v1.0.0");
+    repo.tag("ui-v1.0.0");
+
+    repo.write("shared/schema.json", "{}\n");
+    repo.commit_staged("fix: update shared schema", None);
+
+    let core = compute_paths(&repo, "core-v", &["packages/core", "shared"]);
+    let ui = compute_paths(&repo, "ui-v", &["packages/ui", "shared"]);
+    assert!(core.changed);
+    assert!(ui.changed);
+    assert_eq!(core.version, "1.0.1");
+    assert_eq!(ui.version, "1.0.1");
+}
+
+#[test]
+fn release_as_only_forces_a_project_whose_commit_matches() {
+    let repo = Repo::new();
+    repo.write("packages/core/index.js", "one\n");
+    repo.write("packages/ui/index.js", "one\n");
+    repo.commit_staged("feat: add packages", None);
+    repo.tag("core-v1.0.0");
+    repo.tag("ui-v1.0.0");
+
+    repo.write("packages/core/index.js", "two\n");
+    repo.commit_staged("chore: force core", Some("Release-As: 2.3.4"));
+
+    let core = compute_paths(&repo, "core-v", &["packages/core"]);
+    assert_eq!(core.version, "2.3.4");
+    assert_eq!(core.release_as.as_deref(), Some("2.3.4"));
+    assert!(core.changed);
+
+    let ui = compute_paths(&repo, "ui-v", &["packages/ui"]);
+    assert!(!ui.changed);
+    assert_eq!(ui.version, "1.0.0");
+    assert_eq!(ui.release_as, None);
+}
+
+#[test]
+fn a_forced_version_releases_an_otherwise_unchanged_project() {
+    let repo = Repo::new();
+    repo.write("packages/core/index.js", "one\n");
+    repo.commit_staged("feat: add core", None);
+    repo.tag("core-v1.0.0");
+    repo.write("packages/ui/index.js", "one\n");
+    repo.commit_staged("feat: add ui", None);
+
+    let paths = vec!["packages/core".to_string()];
+    let next = compute_next_version(&ComputeOptions {
+        cwd: repo.path(),
+        release_as: Some("5.0.0"),
+        prefix: "core-v",
+        paths: &paths,
+    })
+    .expect("version");
+    assert!(next.changed);
+    assert_eq!(next.version, "5.0.0");
+    assert_eq!(next.tag, "core-v5.0.0");
+    assert!(next.release_as.is_some());
+}
+
+#[test]
+fn a_path_filtered_project_without_a_matching_first_commit_is_unchanged() {
+    let repo = Repo::new();
+    repo.write("packages/ui/index.js", "one\n");
+    repo.commit_staged("feat: add ui", None);
+
+    let next = compute_paths(&repo, "core-v", &["packages/core"]);
+    assert!(!next.changed);
+    assert_eq!(next.version, "0.0.0");
+    assert_eq!(next.tag, "core-v0.0.0");
+    assert_eq!(next.previous_tag, None);
+}
+
+#[test]
+fn a_path_filtered_first_release_starts_at_zero_one_zero() {
+    let repo = Repo::new();
+    repo.write("packages/core/index.js", "one\n");
+    repo.commit_staged("feat: add core", None);
+
+    let next = compute_paths(&repo, "core-v", &["packages/core"]);
+    assert!(next.changed);
+    assert_eq!(next.version, "0.1.0");
+    assert_eq!(next.tag, "core-v0.1.0");
+}
+
+#[test]
+fn a_tag_at_head_is_existing_and_changed_for_a_path_filtered_project() {
+    let repo = Repo::new();
+    repo.write("packages/core/index.js", "one\n");
+    repo.commit_staged("feat: add core", None);
+    repo.tag("core-v1.0.0");
+
+    let next = compute_paths(&repo, "core-v", &["packages/core"]);
+    assert!(next.existing);
+    assert!(next.changed);
+    assert_eq!(next.version, "1.0.0");
+    assert_eq!(next.tag, "core-v1.0.0");
+}
+
+#[test]
+fn non_conventional_commits_still_bump_a_changed_project() {
+    let repo = Repo::new();
+    repo.write("packages/core/index.js", "one\n");
+    repo.commit_staged("feat: add core", None);
+    repo.tag("core-v1.0.0");
+
+    repo.write("packages/core/index.js", "two\n");
+    repo.commit_staged("Update the core", None);
+
+    let next = compute_paths(&repo, "core-v", &["packages/core"]);
+    assert!(next.changed);
+    assert_eq!(next.version, "1.0.1");
+    assert_eq!(next.bump.as_str(), "patch");
+}
+
+#[test]
+fn single_version_mode_is_always_changed() {
+    let repo = Repo::new();
+    repo.commit("feat: first", None);
+    repo.tag("v1.0.0");
+    let next = compute(&repo);
+    assert!(next.changed);
+}
+
+#[test]
+fn an_existing_release_uses_the_highest_tag_at_head() {
+    let repo = Repo::new();
+    repo.commit("feat: first", None);
+    repo.tag("v1.0.0");
+    repo.tag("v1.0.1");
+
+    let next = compute(&repo);
+    assert!(next.existing);
+    assert_eq!(next.version, "1.0.1");
+    assert_eq!(next.tag, "v1.0.1");
 }
